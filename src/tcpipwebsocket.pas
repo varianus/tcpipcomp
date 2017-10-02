@@ -18,12 +18,13 @@ unit tcpipwebsocket;
 interface
 
 uses
-  classes, TcpIpBase, TcpIpUtils, TcpIpClient, sysutils, URIParser;
+  Classes, TcpIpBase, TcpIpUtils, TcpIpClient, SysUtils, URIParser, DynQueue;
 
 type
 
   { TTcpIpWebSocket }
   TTcpIpWebSocket = class;
+  TWSReadyState = (rsConnecting, rsOpen, rsClosing, rsClosed);
 
   { TcpipListenThread }
 
@@ -33,35 +34,38 @@ type
   public
     constructor Create(websocket: TTcpIpWebSocket);
     procedure Execute; override;
-    Destructor Destroy; override;
+    destructor Destroy; override;
   end;
 
   TTcpIpWebSocket = class
   private
     FHandShakeDone: boolean;
     fResourceName: string;
-    ssl:boolean;
+    ssl: boolean;
     key: string;
     fURI: TURI;
     fOrigin: string;
-    fListener : TcpipListenThread;
+    fListener: TcpipListenThread;
     IntSocket: TTcpIpClientSocket;
-    procedure Output(b: Byte; const data; len: Int64; Mask: boolean=false);
+    FReadyState: TWSReadyState;
+
+    procedure Output(b: byte; const Data; len: int64; Mask: boolean = False);
     function ReadHandShake: boolean;
     procedure SendHandShake;
     procedure SendSwitchHeader;
 
   protected
-    function Write(const ABuffer; ACount: LongInt): LongInt;
-    Procedure ReadFrame;
+    function Write(const ABuffer; ACount: longint): longint;
+    //    Procedure ReadFrame;
   public
     function Listen: boolean;
-    constructor Create(Const URL:string; origin:string);
-    constructor Create(const ASocket: LongInt);
+    procedure Close;
+    constructor Create(const URL: string; origin: string);
+    constructor Create(const ASocket: longint);
   end;
 
 const
-    {:Constants section defining close codes}
+  {:Constants section defining close codes}
   {:Normal valid closure, connection purpose was fulfilled}
   wsCloseNormal = 1000;
   {:Endpoint is going away (like server shutdown) }
@@ -90,11 +94,12 @@ const
   wsCloseErrorTLS = 1015;
 
 
-  function EncodeBufferBase64(const s: String):String;
+function EncodeBufferBase64(const s: string): string;
 
 implementation
+
 uses
-  strutils, base64,  sha1;
+  strutils, base64, sha1;
 
 const
   {:Constants section defining what kind of data are sent from one pont to another}
@@ -113,26 +118,26 @@ const
 
 { TTcpIpWebSocket }
 
-function EncodeBufferBase64(const s: string):String;
+function EncodeBufferBase64(const s: string): string;
 
 var
   Digest: TSHA1Digest;
-  Outstream : TStringStream;
-  Encoder   : TBase64EncodingStream;
+  Outstream: TStringStream;
+  Encoder: TBase64EncodingStream;
 begin
-  Outstream:=TStringStream.Create('');
+  Outstream := TStringStream.Create('');
   try
-    Encoder:=TBase64EncodingStream.create(outstream);
+    Encoder := TBase64EncodingStream.Create(outstream);
     try
       Digest := SHA1String(s);
-      Encoder.Write(digest,sizeof(Digest));
+      Encoder.Write(digest, sizeof(Digest));
     finally
       Encoder.Free;
-      end;
-    Result:=Outstream.DataString;
-  finally
-    Outstream.free;
     end;
+    Result := Outstream.DataString;
+  finally
+    Outstream.Free;
+  end;
 end;
 
 { TcpipListenThread }
@@ -140,20 +145,193 @@ end;
 constructor TcpipListenThread.Create(websocket: TTcpIpWebSocket);
 begin
   inherited Create(False);
-  FWebSocket:= websocket;
+  FWebSocket := websocket;
   FreeOnTerminate := True;
 end;
 
 procedure TcpipListenThread.Execute;
+type
+  TState = (stStart, stNext, stPayload16, stPayload64, stMask, stData);
+var
+  b, opcode: byte;
+  closecode: word;
+  state: TState;
+  fin, havemask: boolean;
+  payloadLength: int64;
+  pos: integer;
+  mask: array[0..3] of byte;
+  stream: TDynamicDataQueue;
+  wstream: TMemoryStream;
+  Data: String;
+
+  procedure EndMask;
+  begin
+    if payloadLength > 0 then
+    begin
+      state := stData;
+      pos := 0;
+    end
+    else
+      state := stStart;
+  end;
+
 begin
-  repeat
-     if Terminated then
-        break;
-     if FWebSocket.IntSocket.CanRead(60000) then
+  state := stStart;
+  pos := 0;
+  payloadLength := 0;
+  opcode := 0;
+  fin := False;
+  closecode := 0;
+  havemask := False;
+
+  stream := TDynamicDataQueue.Create;
+  try
+    while (FWebSocket.FReadyState = rsOpen) and (FWebSocket.IntSocket.Read(b, 1) = 1) do
+    begin
+      case state of
+        stStart:
         begin
-          Synchronize(@FWebSocket.ReadFrame);
+          fin := (b and $80) <> 0;
+          if (b and $70) <> 0 then
+            Exit; // reserved
+          opcode := b and $0F;
+          closecode := 0;
+          state := stNext;
         end;
-  until Terminated;
+        stNext:
+        begin
+          havemask := (b and $80) = $80;
+          payloadLength := b and $7F;
+
+          if (payloadLength < 126) then
+          begin
+            if havemask then
+              state := stMask
+            else
+              EndMask;
+            pos := 0;
+          end
+          else
+          if (payloadLength = 126) then
+          begin
+            pos := 0;
+            state := stPayload16;
+          end
+          else
+          begin
+            pos := 0;
+            state := stPayload64;
+          end;
+        end;
+        stPayload16:
+        begin
+          case pos of
+            0: payloadLength := b;
+            1:
+            begin
+              payloadLength := payloadLength shl 8 or b;
+              if havemask then
+                state := stMask
+              else
+                EndMask;
+              pos := 0;
+              Continue;
+            end;
+          end;
+          Inc(pos);
+        end;
+        stPayload64:
+        begin
+          case pos of
+            0: payloadLength := b;
+            1..6: payloadLength := payloadLength shl 8 or b;
+            7:
+            begin
+              payloadLength := payloadLength shl 8 or b;
+              if havemask then
+                state := stMask
+              else
+                EndMask;
+              pos := 0;
+              Continue;
+            end;
+          end;
+          Inc(pos);
+        end;
+        stMask:
+          case pos of
+            0..2:
+            begin
+              mask[pos] := b;
+              Inc(pos);
+            end;
+            3:
+            begin
+              mask[3] := b;
+              EndMask;
+            end;
+          end;
+        stData:
+        begin
+          if havemask then
+            b := b xor mask[pos mod 4];
+          case opcode of
+            wsCodeClose: closecode := closecode shl 8 or b;
+            else
+              stream.Push(b, 1);
+          end;
+
+          Dec(payloadLength);
+          Inc(pos);
+
+          if (payloadLength = 0) then
+          begin
+            if fin and (opcode <> wsCodeContinuation) and (FWebSocket.FReadyState = rsOpen) then
+            begin
+              case opcode of
+                wsCodeClose: Break;
+                wsCodeText:
+                begin
+                  SetLength(Data, stream.Size);
+                  stream.Pop(PByteArray(Data)^, stream.Size);
+                  FWebSocket.Output($80 + wsCodeText, Data[1] , Length(data));
+                  // message for string
+                end;
+                wsCodePing:
+                begin
+                  SetLength(Data, stream.Size);
+                  stream.Pop(pAnsiChar(Data)^, stream.Size);
+                  FWebSocket.Output(wsCodePong, Data, Length(Data));
+
+                end;
+                wsCodePong:
+                begin
+                  SetLength(Data, stream.Size);
+                  stream.Pop(pAnsiChar(Data)^, stream.Size);
+                end;
+
+                wsCodeBinary:
+                begin
+                  wstream := TMemoryStream.Create;
+                  stream.Pop(wstream, stream.Size);
+                  //Message binary
+                  stream.Free;
+                end;
+              end;
+            stream.Clear;
+          end;
+          state := stStart;
+        end;
+      end;
+    end;
+
+    end;
+  finally
+    stream.Free;
+  end;
+  if FWebSocket.FReadyState = rsOpen then // remotely closed
+    FWebSocket.Close;
+
 end;
 
 destructor TcpipListenThread.Destroy;
@@ -167,10 +345,10 @@ var
   HttpResponse: TStringList;
   wrkstr: string;
 begin
-  HttpResponse:= TStringList.Create;
+  HttpResponse := TStringList.Create;
   try
-    HttpResponse.LineBreak:=#13#10;
-    HttpResponse.NameValueSeparator:=':';
+    HttpResponse.LineBreak := #13#10;
+    HttpResponse.NameValueSeparator := ':';
     HttpResponse.Add('HTTP/1.1 101 Switching Protocols');
     HttpResponse.Values['Upgrade'] := ' websocket';
     HttpResponse.Values['Connection'] := ' upgrade';
@@ -180,9 +358,9 @@ begin
     HttpResponse.Add('');
     wrkstr := HttpResponse.Text;
     IntSocket.WriteStr(wrkstr);
-    FHandShakeDone:=true;
+    FHandShakeDone := True;
   finally
-    HttpResponse.free;
+    HttpResponse.Free;
   end;
 end;
 
@@ -190,56 +368,56 @@ procedure TTcpIpWebSocket.SendHandShake;
 var
   HttpResponse: TStringList;
   wrkstr: string;
-  g:TGUID;
+  g: TGUID;
 begin
-  HttpResponse:= TStringList.Create;
+  HttpResponse := TStringList.Create;
   try
-    HttpResponse.LineBreak:=#13#10;
-    HttpResponse.NameValueSeparator:=':';
-    HttpResponse.Add('GET '+fUri.Document+' HTTP/1.1');
+    HttpResponse.LineBreak := #13#10;
+    HttpResponse.NameValueSeparator := ':';
+    HttpResponse.Add('GET ' + fUri.Document + ' HTTP/1.1');
     HttpResponse.Values['Upgrade'] := ' websocket';
     HttpResponse.Values['origin'] := fOrigin;
     HttpResponse.Values['Connection'] := ' upgrade';
     CreateGUID(G);
-    key:= EncodeBufferBase64(GUIDToString(g));
+    key := EncodeBufferBase64(GUIDToString(g));
     HttpResponse.Values['Sec-WebSocket-Key'] := key;
     HttpResponse.Values['Sec-WebSocket-Vesrion'] := '13';
     HttpResponse.Add('');
     wrkstr := HttpResponse.Text;
     IntSocket.WriteStr(wrkstr);
   finally
-    HttpResponse.free;
+    HttpResponse.Free;
   end;
 end;
 
-function TTcpIpWebSocket.ReadHandShake:boolean;
+function TTcpIpWebSocket.ReadHandShake: boolean;
 var
-  Buf: Array [0..8192-1] of Char;
+  Buf: array [0..8192 - 1] of char;
   cnt: integer;
   HttpRequest: TStringList;
   wrkstr: string;
 
 begin
-  Result:= false;
-  cnt:= IntSocket.Read(Buf, 8192);
+  Result := False;
+  cnt := IntSocket.Read(Buf, 8192);
   if cnt = 0 then
     exit;
-  HttpRequest:= TStringList.Create;
+  HttpRequest := TStringList.Create;
   try
-    HttpRequest.LineBreak:=#13#10;
-    HttpRequest.NameValueSeparator:=':';
+    HttpRequest.LineBreak := #13#10;
+    HttpRequest.NameValueSeparator := ':';
     HttpRequest.SetText(Buf);
     if HttpRequest.Count < 5 then
       exit;
     wrkstr := HttpRequest[0];
     if ((Pos('GET ', Uppercase(wrkstr)) = 0) or
-        (Pos(' HTTP/1.1', Uppercase(wrkstr)) = 0)) then
+      (Pos(' HTTP/1.1', Uppercase(wrkstr)) = 0)) then
       exit;
 
     Copy2SpaceDel(wrkstr);
-    fResourceName:=Copy2Space(wrkstr);
+    fResourceName := Copy2Space(wrkstr);
 
-    wrkstr:= HttpRequest.Values['sec-websocket-key'];
+    wrkstr := HttpRequest.Values['sec-websocket-key'];
     if wrkstr = '' then
       exit;
 
@@ -252,132 +430,147 @@ begin
       (pos('upgrade', LowerCase(trim(HttpRequest.Values['Connection']))) = 0) then
       exit;
 
-    result:= true;
+    Result := True;
   finally
     HttpRequest.Free;
   end;
 
-
 end;
 
-procedure TTcpIpWebSocket.Output(b: Byte; const data; len: Int64; Mask: boolean=false);
+procedure TTcpIpWebSocket.Output(b: byte; const Data; len: int64; Mask: boolean = False);
 var
-  lenarray: array[0..7] of Byte absolute len;
-  d: Cardinal;
+  lenarray: array[0..7] of byte absolute len;
+  d: cardinal;
   p: Pointer;
   g: TGUID;
   bitMask: byte;
 begin
+  Intsocket.Write(b, 1);
+  if mask then
+    bitMask := $80
+  else
+    bitMask := $00;
+
+  if len < 126 then
+  begin
+    b := len or bitMask;
     Intsocket.Write(b, 1);
-    if mask then
-      bitMask:=$80
-    else
-      bitMask:=$00;
-
-    if len < 126 then
-    begin
-      b := len or bitMask;
-      Intsocket.Write(b, 1);
-    end else
-      if len < High(Word) then
-      begin
-        b := 126 or bitMask;
-        Intsocket.Write(b, 1);
-        Intsocket.Write(lenarray[1], 1);
-        Intsocket.Write(lenarray[0], 1);
-      end else
-      begin
-        b := 127 or bitMask;
-        Intsocket.Write(b, 1);
-        Intsocket.Write(lenarray[7], 1);
-        Intsocket.Write(lenarray[6], 1);
-        Intsocket.Write(lenarray[5], 1);
-        Intsocket.Write(lenarray[4], 1);
-        Intsocket.Write(lenarray[3], 1);
-        Intsocket.Write(lenarray[2], 1);
-        Intsocket.Write(lenarray[1], 1);
-        Intsocket.Write(lenarray[0], 1);
-      end;
-
-    if Mask then
-      begin
-        CreateGUID(g); // entropy
-        Intsocket.Write(g.D1, SizeOf(g.D1));
-        p := @data;
-        while len >= 4 do
-          begin
-            d := Cardinal(p^) xor g.D1;
-            Intsocket.Write(d, SizeOf(d));
-            Inc(NativeInt(p), 4);
-            Dec(len, 4);
-          end;
-        if len > 0 then
-          begin
-            Move(p^, d, len);
-            d := d xor g.D1;
-            Intsocket.Write(d, len);
-          end;
-      end
-    else
-      Intsocket.Write(data, len);
-
+  end
+  else
+  if len < High(word) then
+  begin
+    b := 126 or bitMask;
+    Intsocket.Write(b, 1);
+    Intsocket.Write(lenarray[1], 1);
+    Intsocket.Write(lenarray[0], 1);
+  end
+  else
+  begin
+    b := 127 or bitMask;
+    Intsocket.Write(b, 1);
+    Intsocket.Write(lenarray[7], 1);
+    Intsocket.Write(lenarray[6], 1);
+    Intsocket.Write(lenarray[5], 1);
+    Intsocket.Write(lenarray[4], 1);
+    Intsocket.Write(lenarray[3], 1);
+    Intsocket.Write(lenarray[2], 1);
+    Intsocket.Write(lenarray[1], 1);
+    Intsocket.Write(lenarray[0], 1);
   end;
 
+  if Mask then
+  begin
+    CreateGUID(g); // entropy
+    Intsocket.Write(g.D1, SizeOf(g.D1));
+    p := @Data;
+    while len >= 4 do
+    begin
+      d := cardinal(p^) xor g.D1;
+      Intsocket.Write(d, SizeOf(d));
+      Inc(NativeInt(p), 4);
+      Dec(len, 4);
+    end;
+    if len > 0 then
+    begin
+      Move(p^, d, len);
+      d := d xor g.D1;
+      Intsocket.Write(d, len);
+    end;
+  end
+  else
+    Intsocket.Write(Data, len);
 
-function TTcpIpWebSocket.Write(const ABuffer; ACount: LongInt): LongInt;
+end;
+
+
+function TTcpIpWebSocket.Write(const ABuffer; ACount: longint): longint;
 begin
   Output($80 or wsCodeText, ABuffer, ACount);
 end;
 
 
-function TTcpIpWebSocket.Listen:boolean;
+function TTcpIpWebSocket.Listen: boolean;
 begin
+  FReadyState:= rsConnecting;
   if not FHandShakeDone then
-    begin
-      if ReadHandShake then
-        SendSwitchHeader
-      else
-        exit;
-    end;
+  begin
+    if ReadHandShake then
+      SendSwitchHeader
+    else
+      exit;
+  end;
+  FReadyState:= rsOpen;
   fListener := TcpipListenThread.Create(Self);
   fListener.Start;
 end;
 
-
-Procedure TTcpIpWebSocket.ReadFrame;
-var
-  Buf: Array [0..8192-1] of Char;
+procedure TTcpIpWebSocket.Close;
 begin
-  // only to empty input buffer ......
-  IntSocket.Read(Buf, 8192);
-
-  Write('I am ALIVE!',11);
+  if FReadyState = rsOpen then
+  begin
+    FReadyState := rsClosing;
+    fListener.Terminate;
+    Sleep(1); // let the listen thread close
+    IntSocket.Free;
+    FReadyState := rsClosed;
+  end;
 end;
 
-constructor TTcpIpWebSocket.Create(Const URL:string; origin:string);
+
+//procedure TTcpIpWebSocket.ReadFrame;
+//var
+//  Buf: Array [0..8192-1] of Char;
+//begin
+//  // only to empty input buffer ......
+//  IntSocket.Read(Buf, 8192);
+
+//  Write('I am ALIVE!',11);
+//end;
+
+constructor TTcpIpWebSocket.Create(const URL: string; origin: string);
 begin
   fURI := URIParser.ParseURI(URL);
   if fUri.protocol = 'ws' then
-   begin
-     ssl := False;
-     if fUri.port = 0 then
-       fUri.port := 80;
-   end else
-     if fUri.protocol = 'wss' then
-     begin
-       ssl := True;
-       if fUri.port = 0 then
-         fUri.port := 443;
-     end;
-  fOrigin:=origin;
+  begin
+    ssl := False;
+    if fUri.port = 0 then
+      fUri.port := 80;
+  end
+  else
+  if fUri.protocol = 'wss' then
+  begin
+    ssl := True;
+    if fUri.port = 0 then
+      fUri.port := 443;
+  end;
+  fOrigin := origin;
   IntSocket.Create(fURI.Host, fUri.Port);
   SendHandShake;
 end;
 
-constructor TTcpIpWebSocket.Create(const ASocket: LongInt);
+constructor TTcpIpWebSocket.Create(const ASocket: longint);
 begin
-  IntSocket:= TTcpIpClientSocket.Create(ASocket);
+  IntSocket := TTcpIpClientSocket.Create(ASocket);
 end;
 
 end.
-
