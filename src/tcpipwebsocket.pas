@@ -26,11 +26,18 @@ type
   TTcpIpWebSocket = class;
   TWSReadyState = (rsConnecting, rsOpen, rsClosing, rsClosed);
 
+  TTcpWSText = procedure(ws: TTcpIpWebSocket; const Data: string) of object;
+  TTcpWSBinary = procedure(ws: TTcpIpWebSocket; const Data: TStream) of object;
+
+
   { TcpipListenThread }
 
   TcpipListenThread = class(TThread)
   private
     FWebSocket: TTcpIpWebSocket;
+    stream: TDynamicDataQueue;
+    procedure SendText;
+    procedure SendBinary;
   public
     constructor Create(websocket: TTcpIpWebSocket);
     procedure Execute; override;
@@ -40,6 +47,8 @@ type
   TTcpIpWebSocket = class
   private
     FHandShakeDone: boolean;
+    FonBinary: TTcpWSBinary;
+    FOnText: TTcpWSText;
     fResourceName: string;
     ssl: boolean;
     key: string;
@@ -53,12 +62,16 @@ type
     function ReadHandShake: boolean;
     procedure SendHandShake;
     procedure SendSwitchHeader;
+    procedure SetonBinary(AValue: TTcpWSBinary);
+    procedure SetOnText(AValue: TTcpWSText);
 
-  protected
-    function Write(const ABuffer; ACount: longint): longint;
-    //    Procedure ReadFrame;
   public
+    property OnText: TTcpWSText read FOnText write SetOnText;
+    property onBinary: TTcpWSBinary read FonBinary write SetonBinary;
     function Listen: boolean;
+    function Write(const ABuffer; ACount: longint): longint;
+    function WriteString(const AString: string; ACount: longint): longint;
+    function WriteSTream(const AStream: TStream; ACount: longint): longint;
     procedure Close;
     constructor Create(const URL: string; origin: string);
     constructor Create(const ASocket: longint);
@@ -142,6 +155,32 @@ end;
 
 { TcpipListenThread }
 
+procedure TcpipListenThread.SendText;
+var
+  Data: RawByteString; //UTF8
+begin
+  SetLength(Data, stream.Size);
+  stream.Pop(PByteArray(Data)^, stream.Size);
+  SetCodePage(Data, CP_UTF8);
+  if Assigned(FWebSocket.FOnText) then
+    FWebSocket.FOnText(FWebSocket, Data);
+
+end;
+
+procedure TcpipListenThread.SendBinary;
+var
+  wstream: TMemoryStream;
+begin
+  wstream := TMemoryStream.Create;
+  stream.Pop(wstream, stream.Size);
+  wstream.Position := 0;
+  if Assigned(FWebSocket.onBinary) then
+    FWebSocket.FonBinary(FWebSocket, wstream);
+
+  Wstream.Free;
+
+end;
+
 constructor TcpipListenThread.Create(websocket: TTcpIpWebSocket);
 begin
   inherited Create(False);
@@ -160,9 +199,7 @@ var
   payloadLength: int64;
   pos: integer;
   mask: array[0..3] of byte;
-  stream: TDynamicDataQueue;
-  wstream: TMemoryStream;
-  Data: String;
+  Data: RawByteString;
 
   procedure EndMask;
   begin
@@ -292,15 +329,12 @@ begin
                 wsCodeClose: Break;
                 wsCodeText:
                 begin
-                  SetLength(Data, stream.Size);
-                  stream.Pop(PByteArray(Data)^, stream.Size);
-                  FWebSocket.Output($80 + wsCodeText, Data[1] , Length(data));
-                  // message for string
+                  Synchronize(@SendText);
                 end;
                 wsCodePing:
                 begin
                   SetLength(Data, stream.Size);
-                  stream.Pop(pAnsiChar(Data)^, stream.Size);
+                  stream.Pop(PByteArray(Data)^, stream.Size);
                   FWebSocket.Output(wsCodePong, Data, Length(Data));
 
                 end;
@@ -312,18 +346,15 @@ begin
 
                 wsCodeBinary:
                 begin
-                  wstream := TMemoryStream.Create;
-                  stream.Pop(wstream, stream.Size);
-                  //Message binary
-                  stream.Free;
+                  Synchronize(@sendBinary);
                 end;
               end;
-            stream.Clear;
+              stream.Clear;
+            end;
+            state := stStart;
           end;
-          state := stStart;
         end;
       end;
-    end;
 
     end;
   finally
@@ -362,6 +393,20 @@ begin
   finally
     HttpResponse.Free;
   end;
+end;
+
+procedure TTcpIpWebSocket.SetonBinary(AValue: TTcpWSBinary);
+begin
+  if FonBinary = AValue then
+    Exit;
+  FonBinary := AValue;
+end;
+
+procedure TTcpIpWebSocket.SetOnText(AValue: TTcpWSText);
+begin
+  if FOnText = AValue then
+    Exit;
+  FOnText := AValue;
 end;
 
 procedure TTcpIpWebSocket.SendHandShake;
@@ -505,13 +550,23 @@ end;
 
 function TTcpIpWebSocket.Write(const ABuffer; ACount: longint): longint;
 begin
-  Output($80 or wsCodeText, ABuffer, ACount);
+  Output($80 or wsCodeBinary, ABuffer, ACount);
+end;
+
+function TTcpIpWebSocket.WriteString(const AString: string; ACount: longint): longint;
+begin
+  Output($80 or wsCodeText, AString[1], ACount);
+end;
+
+function TTcpIpWebSocket.WriteSTream(const AStream: TStream; ACount: longint): longint;
+begin
+  //  Output($80 or wsCodeBinary, AStream[1], ACount);
 end;
 
 
 function TTcpIpWebSocket.Listen: boolean;
 begin
-  FReadyState:= rsConnecting;
+  FReadyState := rsConnecting;
   if not FHandShakeDone then
   begin
     if ReadHandShake then
@@ -519,7 +574,7 @@ begin
     else
       exit;
   end;
-  FReadyState:= rsOpen;
+  FReadyState := rsOpen;
   fListener := TcpipListenThread.Create(Self);
   fListener.Start;
 end;
