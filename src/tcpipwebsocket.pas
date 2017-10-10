@@ -284,7 +284,7 @@ begin
           if (FWebSocket.IntSocket.Read(mask, 4) <> 4) then
              break;
         end;
-
+      pos:=0;
       while not terminated and (payloadlength > 0)  do
         begin
           if (FWebSocket.IntSocket.Read(b, 1) <> 1) then
