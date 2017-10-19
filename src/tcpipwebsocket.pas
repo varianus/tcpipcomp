@@ -40,6 +40,7 @@ type
     procedure SendBinary;
   public
     constructor Create(websocket: TTcpIpWebSocket);
+    procedure Close; overload;
     procedure Execute; override;
     destructor Destroy; override;
   end;
@@ -77,6 +78,7 @@ type
     procedure Close;
     constructor Create(const URL: string; origin: string);
     constructor Create(const ASocket: longint);
+    destructor Destroy; override;
   end;
 
 const
@@ -210,6 +212,12 @@ begin
   inherited Create(False);
   FWebSocket := websocket;
   FreeOnTerminate := True;
+end;
+
+procedure TcpipListenThread.Close;
+begin
+  FWebSocket.IntSocket.Socket.Close;
+  inherited Terminate;
 end;
 
 procedure TcpipListenThread.Execute;
@@ -633,7 +641,6 @@ begin
   begin
     FReadyState := rsClosing;
     Output($80+wsCodeClose,'',0);
-    IntSocket.Free;
     FReadyState := rsClosed;
   end;
   Self.Free;
@@ -662,6 +669,14 @@ end;
 constructor TTcpIpWebSocket.Create(const ASocket: longint);
 begin
   IntSocket := TTcpIpClientSocket.Create(ASocket);
+end;
+
+destructor TTcpIpWebSocket.Destroy;
+begin
+  if Assigned(fListener) then
+    fListener.Terminate;
+  IntSocket.Free;
+  inherited Destroy;
 end;
 
 end.
