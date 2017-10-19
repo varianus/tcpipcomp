@@ -1,67 +1,54 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CONFIG>
-  <ProjectOptions>
-    <Version Value="10"/>
-    <General>
-      <Flags>
-        <MainUnitHasCreateFormStatements Value="False"/>
-        <MainUnitHasTitleStatement Value="False"/>
-        <MainUnitHasScaledStatement Value="False"/>
-        <UseDefaultCompilerOptions Value="True"/>
-      </Flags>
-      <SessionStorage Value="InProjectDir"/>
-      <MainUnit Value="-1"/>
-    </General>
-    <VersionInfo>
-      <StringTable ProductVersion="0.0.0.0"/>
-    </VersionInfo>
-    <BuildModes Count="1">
-      <Item1 Name="default" Default="True"/>
-    </BuildModes>
+  <Package Version="4">
+    <PathDelim Value="\"/>
+    <Name Value="tcpipcomp"/>
+    <Type Value="RunAndDesignTime"/>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <PathDelim Value="\"/>
+      <SearchPaths>
+        <OtherUnitFiles Value="..\src"/>
+        <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)\"/>
+      </SearchPaths>
+    </CompilerOptions>
+    <Description Value="tcpipcomp"/>
+    <Version Major="1"/>
+    <Files Count="5">
+      <Item1>
+        <Filename Value="..\src\tcpipbase.pas"/>
+        <UnitName Value="TcpIpBase"/>
+      </Item1>
+      <Item2>
+        <Filename Value="..\src\tcpipclient.pas"/>
+        <UnitName Value="TcpIpClient"/>
+      </Item2>
+      <Item3>
+        <Filename Value="..\src\tcpipserver.pas"/>
+        <UnitName Value="TcpIpServer"/>
+      </Item3>
+      <Item4>
+        <Filename Value="..\src\tcpiputils.pas"/>
+        <UnitName Value="TcpIpUtils"/>
+      </Item4>
+      <Item5>
+        <Filename Value="..\src\tcpipwebsocket.pas"/>
+        <UnitName Value="tcpipwebsocket"/>
+      </Item5>
+    </Files>
+    <RequiredPkgs Count="2">
+      <Item1>
+        <PackageName Value="LCL"/>
+      </Item1>
+      <Item2>
+        <PackageName Value="FCL"/>
+      </Item2>
+    </RequiredPkgs>
+    <UsageOptions>
+      <UnitPath Value="$(PkgOutDir)"/>
+    </UsageOptions>
     <PublishOptions>
       <Version Value="2"/>
     </PublishOptions>
-    <RunParams>
-      <local>
-        <FormatVersion Value="1"/>
-      </local>
-    </RunParams>
-  </ProjectOptions>
-  <CompilerOptions>
-    <Version Value="11"/>
-    <Parsing>
-      <SyntaxOptions>
-        <UseAnsiStrings Value="False"/>
-      </SyntaxOptions>
-    </Parsing>
-  </CompilerOptions>
-  <Debugging>
-    <Exceptions Count="8">
-      <Item1>
-        <Name Value="EAbort"/>
-      </Item1>
-      <Item2>
-        <Name Value="ECodetoolError"/>
-      </Item2>
-      <Item3>
-        <Name Value="EFOpenError"/>
-      </Item3>
-      <Item4>
-        <Name Value="Exception"/>
-        <Enabled Value="False"/>
-      </Item4>
-      <Item5>
-        <Name Value="EDatabaseError"/>
-      </Item5>
-      <Item6>
-        <Name Value="EReadError"/>
-      </Item6>
-      <Item7>
-        <Name Value="ESocketError"/>
-      </Item7>
-      <Item8>
-        <Name Value="EInOutError"/>
-      </Item8>
-    </Exceptions>
-  </Debugging>
+  </Package>
 </CONFIG>
