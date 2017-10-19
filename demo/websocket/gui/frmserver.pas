@@ -65,7 +65,7 @@ type
   protected
     procedure DoClientConnect;
     procedure DoClientDisconnect;
-    procedure DoClientReceive;
+    procedure DoClientReceive(Const data:string);
     procedure GetData (ws: TTcpIpWebSocket; const Data: string);
   public
     constructor Create(AOwner: TServerThread; const ASocket: LongInt);
@@ -157,7 +157,7 @@ destructor TClientObject.Destroy;
 begin
   if Assigned(FOwner) then
     FOwner.Clients.Remove(Self);
-    FSocket.Free;
+
   inherited Destroy;
 end;
 
@@ -191,7 +191,7 @@ begin
     FOnDisconnect(Self, ptruint(FSocket));
 end;
 
-procedure TClientObject.DoClientReceive;
+procedure TClientObject.DoClientReceive(Const Data:string);
 var
   VList: TList;
   VItem: Pointer;
@@ -209,7 +209,7 @@ begin
     begin
       if not Assigned(VClient.Socket) then
         Continue;
-      FData := DateTimeToStr(Now) + '- ' + FData;
+      FData := DateTimeToStr(Now) + '- ' + Data;
       VClient.Socket.WriteString(FData);
       if Assigned(FOnReceive) and (VClient <> Self) then
         FOnReceive(Self, FData);
@@ -221,8 +221,7 @@ end;
 
 procedure TClientObject.GetData(ws: TTcpIpWebSocket; const Data: string);
 begin
-  FData:=Data;
-  DoClientReceive;
+  DoClientReceive(Data);
 end;
 
 { TfrServer }
