@@ -18,7 +18,7 @@ unit tcpipwebsocket;
 interface
 
 uses
-  Classes, TcpIpBase, TcpIpUtils, TcpIpClient, SysUtils, URIParser, DynQueue, math;
+  Classes, TcpIpBase, TcpIpClient, SysUtils, URIParser, DynQueue;
 
 type
 
@@ -49,9 +49,10 @@ type
   private
     FHandShakeDone: boolean;
     FonBinary: TTcpWSBinary;
+    FOnGetSocketHandler: TOnGetSocketHandler;
     FOnText: TTcpWSText;
     fResourceName: string;
-    ssl: boolean;
+    fssl: boolean;
     key: string;
     fURI: TURI;
     fOrigin: string;
@@ -65,6 +66,7 @@ type
     procedure SendHandShake;
     procedure SendSwitchHeader;
     procedure SetonBinary(AValue: TTcpWSBinary);
+    procedure SetOnGetSocketHandler(AValue: TOnGetSocketHandler);
     procedure SetOnText(AValue: TTcpWSText);
 
   public
@@ -111,7 +113,7 @@ const
   wsCloseErrorTLS = 1015;
 
 
-function EncodeBufferBase64(const s: string): string;
+function EncodeHashToBase64(const s: string): string;
 
 implementation
 
@@ -137,7 +139,7 @@ const
 
 { TTcpIpWebSocket }
 
-function EncodeBufferBase64(const s: string): string;
+function EncodeHashToBase64(const s: string): string;
 
 var
   Digest: TSHA1Digest;
@@ -226,7 +228,7 @@ type
 var
   b, opcode: byte;
   L16:word;
-  L64: int64;
+  L64: qword;
   closecode: word;
   state: TState;
   fin, havemask: boolean;
@@ -282,7 +284,7 @@ begin
         end;
       if (payloadLength = 127) then
         begin
-          if (FWebSocket.IntSocket.Read(L64, 2) <> 2) then
+          if (FWebSocket.IntSocket.Read(L64, 8) <> 8) then
              break;
           payloadLength:=BEtoN(L64);
         end;
@@ -377,7 +379,7 @@ begin
     HttpResponse.Add('HTTP/1.1 101 Switching Protocols');
     HttpResponse.Values['Upgrade'] := ' websocket';
     HttpResponse.Values['Connection'] := ' upgrade';
-    wrkstr := EncodeBufferBase64(key + WS_SALT_V13);
+    wrkstr := EncodeHashToBase64(key + WS_SALT_V13);
 
     HttpResponse.Values['Sec-WebSocket-Accept'] := wrkstr;
     HttpResponse.Add('');
@@ -394,6 +396,12 @@ begin
   if FonBinary = AValue then
     Exit;
   FonBinary := AValue;
+end;
+
+procedure TTcpIpWebSocket.SetOnGetSocketHandler(AValue: TOnGetSocketHandler);
+begin
+  if FOnGetSocketHandler=AValue then Exit;
+  FOnGetSocketHandler:=AValue;
 end;
 
 procedure TTcpIpWebSocket.SetOnText(AValue: TTcpWSText);
@@ -429,12 +437,48 @@ begin
   end;
 end;
 
+function DecodeBase64ToString(const s:string;strict:boolean=false):rawbytestring;
+
+var
+  SD : String;
+  Instream  : TStringStream;
+  Outstream : TmemoryStream;
+  Decoder   : TBase64DecodingStream;
+begin
+  SD:=S;
+  while Length(Sd) mod 4 > 0 do
+    SD := SD + '=';
+  Instream:=TStringStream.Create(SD);
+  try
+    Outstream:=TmemoryStream.Create();
+    try
+      if strict then
+        Decoder:=TBase64DecodingStream.Create(Instream,bdmStrict)
+      else
+        Decoder:=TBase64DecodingStream.Create(Instream,bdmMIME);
+      try
+         Outstream.CopyFrom(Decoder,Decoder.Size);
+         Setlength(result, outstream.size);
+         Outstream.Position := 0;
+         Move(Outstream.Memory,Result[1], Outstream.Size);
+      finally
+        Decoder.Free;
+        end;
+    finally
+     Outstream.Free;
+     end;
+  finally
+    Instream.Free;
+    end;
+end;
+
 function TTcpIpWebSocket.ReadHandShake: boolean;
 var
   Buf: array [0..8192 - 1] of char;
   cnt: integer;
   HttpRequest: TStringList;
   wrkstr: string;
+  wrkbuf: rawbytestring;
 
 begin
   Result := False;
@@ -459,8 +503,9 @@ begin
     wrkstr := trim(HttpRequest.Values['sec-websocket-key']);
     if wrkstr = '' then
       exit;
-    cnt:= Length(DecodeStringBase64(wrkstr));
-    if (Length(DecodeStringBase64(wrkstr)) = 16) then
+    wrkbuf := DecodeBase64ToString(wrkstr);
+    cnt:= length(wrkbuf);
+    if (cnt = 16) then
       key := trim(wrkstr)
     else
       exit;
@@ -503,7 +548,7 @@ begin
     if wrkstr = '' then
       exit;
 
-    if EncodeBufferBase64(key + WS_SALT_V13) <> trim(wrkstr) then
+    if EncodeHashToBase64(key + WS_SALT_V13) <> trim(wrkstr) then
       exit;
 
     if (LowerCase(trim(HttpRequest.Values['Upgrade'])) <> LowerCase('websocket')) or
@@ -520,7 +565,6 @@ end;
 
 procedure TTcpIpWebSocket.Output(b: byte; const Data; len: int64; Mask: boolean = False);
 var
-  lenarray: array[0..7] of byte absolute len;
   d: cardinal;
   p: Pointer;
   g: TGUID;
@@ -544,21 +588,13 @@ begin
   begin
     b := 126 or bitMask;
     Intsocket.Write(b, 1);
-    Intsocket.Write(lenarray[1], 1);
-    Intsocket.Write(lenarray[0], 1);
+    intsocket.Write(NtoBE(Word(len)),2);
   end
   else
   begin
     b := 127 or bitMask;
     Intsocket.Write(b, 1);
-    Intsocket.Write(lenarray[7], 1);
-    Intsocket.Write(lenarray[6], 1);
-    Intsocket.Write(lenarray[5], 1);
-    Intsocket.Write(lenarray[4], 1);
-    Intsocket.Write(lenarray[3], 1);
-    Intsocket.Write(lenarray[2], 1);
-    Intsocket.Write(lenarray[1], 1);
-    Intsocket.Write(lenarray[0], 1);
+    intsocket.Write(NtoBE(len),8);
   end;
 
   if Mask then
@@ -651,14 +687,14 @@ begin
   fURI := URIParser.ParseURI(URL);
   if fUri.protocol = 'ws' then
   begin
-    ssl := False;
+    Fssl := False;
     if fUri.port = 0 then
       fUri.port := 80;
   end
   else
   if fUri.protocol = 'wss' then
   begin
-    ssl := True;
+    Fssl := True;
     if fUri.port = 0 then
       fUri.port := 443;
   end;
